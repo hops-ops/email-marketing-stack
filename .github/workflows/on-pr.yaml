@@ -35,7 +35,9 @@ jobs:
           { "example": "examples/emailmarketingstacks/local-colima.yaml" }
         ]
       api_path: apis/emailmarketingstacks
-      error_on_missing_schemas: true
+      # See on-push-main.yaml — PSQLCluster (cross-stack) schema is
+      # unavailable in the validate environment.
+      error_on_missing_schemas: false
 
   test:
     uses: unbounded-tech/workflows-crossplane/.github/workflows/test.yaml@v2.20.0
