@@ -1,0 +1,40 @@
+# code: language=yaml
+#
+# Output XR status.
+
+{{- $xr := getCompositeResource . }}
+{{- $s := $state.status }}
+---
+apiVersion: {{ $xr.apiVersion }}
+kind: {{ $xr.kind }}
+status:
+  ready: {{ $s.ready }}
+  tenancy:
+    mode: {{ $s.tenancy.mode | quote }}
+  admin:
+    url: {{ $s.admin.url | quote }}
+  subscriptionPage:
+    url: {{ $s.subscriptionPage.url | quote }}
+  smtp:
+    sourceSmtpStack: {{ $s.smtp.sourceSmtpStack | quote }}
+    awsSecretsManagerPath: {{ $s.smtp.awsSecretsManagerPath | quote }}
+    secretSynced: {{ $s.smtp.secretSynced }}
+    fromAddress: {{ $s.smtp.fromAddress | quote }}
+  database:
+    mode: {{ $s.database.mode | quote }}
+    embedded:
+      psqlClusterName: {{ $s.database.embedded.psqlClusterName | quote }}
+      appSecretName: {{ $s.database.embedded.appSecretName | quote }}
+      host: {{ $s.database.embedded.host | quote }}
+      database: {{ $s.database.embedded.database | quote }}
+  oidc:
+    enabled: {{ $s.oidc.enabled }}
+    issuerURL: {{ $s.oidc.issuerURL | quote }}
+    clientSecretRef:
+      name: {{ $s.oidc.clientSecretRef.name | quote }}
+      namespace: {{ $s.oidc.clientSecretRef.namespace | quote }}
+    redirectURI: {{ $s.oidc.redirectURI | quote }}
+  exposure:
+    enabled: {{ $s.exposure.enabled }}
+    hostname: {{ $s.exposure.hostname | quote }}
+    url: {{ $s.exposure.url | quote }}

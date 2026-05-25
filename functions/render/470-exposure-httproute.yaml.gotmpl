@@ -1,0 +1,59 @@
+# code: language=yaml
+#
+# Single Gateway API HTTPRoute for the Listmonk marketing surface.
+#
+# Listmonk handles its own auth on /admin and /api via native OIDC when
+# enabled (per feedback_app_level_oidc); subscription / campaign / link /
+# uploads paths are intentionally anonymous and reach the same backend.
+# So one HTTPRoute + one origin is sufficient — no path-scoped
+# AuthorizationPolicy.CUSTOM, no oauth2-proxy, no Redis.
+#
+# Backend: the chart's Service is `<release>-listmonk` (fullname) at port
+# 9000. With the stack's release name `<xr-name>-listmonk`, the chart's
+# fullname template resolves to `<xr-name>-listmonk-listmonk`. We
+# reference it explicitly here so consumers don't need to guess.
+
+{{- $exp := $state.exposure }}
+
+{{- if and $exp.enabled $exp.hostname $exp.gatewayRef.name }}
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: {{ $state.name }}-exposure-httproute
+  annotations:
+    {{ setResourceNameAnnotation "exposure-httproute" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  managementPolicies: {{ $state.managementPolicies | toJson }}
+  forProvider:
+    manifest:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: exposure-listmonk
+        namespace: {{ $state.namespace }}
+        labels: {{ $state.labels | toJson }}
+      spec:
+        parentRefs:
+        - name: {{ $exp.gatewayRef.name }}
+          namespace: {{ $exp.gatewayRef.namespace }}
+          {{- if $exp.gatewayRef.sectionName }}
+          sectionName: {{ $exp.gatewayRef.sectionName }}
+          {{- end }}
+        hostnames:
+        - {{ $exp.hostname | quote }}
+        rules:
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: {{ $state.name }}-listmonk
+            namespace: {{ $state.namespace }}
+            port: 9000
+  providerConfigRef:
+    name: {{ $state.kubernetesProviderConfigRef.name }}
+    kind: {{ $state.kubernetesProviderConfigRef.kind }}
+{{- end }}
+

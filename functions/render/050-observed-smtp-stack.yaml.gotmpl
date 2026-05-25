@@ -1,0 +1,37 @@
+# code: language=yaml
+#
+# Observe the upstream SMTPStack XR.
+#
+# Uses `managementPolicies: [Observe]` on a provider-kubernetes Object MR so
+# Crossplane reads — but never writes — the SMTPStack XR. The render function
+# then reads `status.smtp.awsSecretsManagerPath` from the observed manifest
+# and gates SMTP ExternalSecret rendering on it (see 010-state-status and
+# 150-external-secret-smtp).
+#
+# When `spec.smtp.enabled` is false or `smtpStackRef.name` is unset, the
+# observation is skipped entirely.
+
+{{- $smtp := $state.smtp }}
+
+{{- if and $smtp.enabled $smtp.smtpStackRef.name }}
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: {{ $state.name }}-observed-smtp-stack
+  annotations:
+    {{ setResourceNameAnnotation "observed-smtp-stack" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  managementPolicies: ["Observe"]
+  forProvider:
+    manifest:
+      apiVersion: hops.ops.com.ai/v1alpha1
+      kind: SMTPStack
+      metadata:
+        name: {{ $smtp.smtpStackRef.name }}
+        namespace: {{ $smtp.smtpStackRef.namespace }}
+  providerConfigRef:
+    name: {{ $state.kubernetesProviderConfigRef.name }}
+    kind: {{ $state.kubernetesProviderConfigRef.kind }}
+{{- end }}

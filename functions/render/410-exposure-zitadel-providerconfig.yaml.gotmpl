@@ -1,0 +1,38 @@
+# code: language=yaml
+#
+# Zitadel ProviderConfig in the install namespace, sourcing from the
+# zitadel-credentials Secret rendered in 400-*. Used by the OIDC App MR
+# (420-*) to provision the Listmonk OIDC client in Zitadel.
+
+{{- $oidc := $state.oidc }}
+
+{{- if and $oidc.enabled $oidc.awsSecretsManagerPath }}
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: {{ $state.name }}-exposure-zitadel-providerconfig
+  annotations:
+    {{ setResourceNameAnnotation "exposure-zitadel-providerconfig" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  managementPolicies: {{ $state.managementPolicies | toJson }}
+  forProvider:
+    manifest:
+      apiVersion: zitadel.m.crossplane.io/v1beta1
+      kind: ProviderConfig
+      metadata:
+        name: zitadel-email-marketing-stack
+        namespace: {{ $state.namespace }}
+        labels: {{ $state.labels | toJson }}
+      spec:
+        credentials:
+          source: Secret
+          secretRef:
+            name: zitadel-credentials
+            namespace: {{ $state.namespace }}
+            key: credentials
+  providerConfigRef:
+    name: {{ $state.kubernetesProviderConfigRef.name }}
+    kind: {{ $state.kubernetesProviderConfigRef.kind }}
+{{- end }}

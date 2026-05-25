@@ -1,0 +1,122 @@
+# code: language=yaml
+#
+# Extract observed state and compute SMTP readiness gating + status surface.
+#
+# v1 surface:
+#  - SMTP ExternalSecret renders only when `smtp.enabled` AND the referenced
+#    SMTPStack reports `status.smtp.awsSecretsManagerPath`. Until both hold,
+#    the stack stays installed (DB + Helm release) but campaign sending is
+#    not wired.
+#  - Observed Helm release readiness feeds the boolean status.ready.
+#
+
+{{- $observed := $.observed.resources | default dict }}
+
+# ==============================================================================
+# Observe upstream SMTPStack — read status.smtp.awsSecretsManagerPath from
+# the referenced XR. The XR is observed via a kubernetes.m.crossplane.io
+# Object MR named `<name>-observed-smtp-stack` (see 050-observed-smtp-stack).
+# ==============================================================================
+{{- $smtpStackPath := "" }}
+{{- if and $state.smtp.enabled $state.smtp.smtpStackRef.name }}
+  {{- $obsSmtpEntry := get $observed "observed-smtp-stack" | default dict }}
+  {{- $obsSmtpRes := $obsSmtpEntry.resource | default dict }}
+  {{- $obsSmtpStatus := $obsSmtpRes.status | default dict }}
+  {{- $obsSmtpAtProvider := $obsSmtpStatus.atProvider | default dict }}
+  {{- $obsSmtpManifest := $obsSmtpAtProvider.manifest | default dict }}
+  {{- $obsSmtpInner := $obsSmtpManifest.status | default dict }}
+  {{- $obsSmtpInnerSmtp := $obsSmtpInner.smtp | default dict }}
+  {{- $smtpStackPath = $obsSmtpInnerSmtp.awsSecretsManagerPath | default "" }}
+{{- end }}
+{{- $state = set $state "observed" (set $state.observed "smtpStackAwsSecretsManagerPath" $smtpStackPath) }}
+
+# Render ExternalSecret only when SMTP enabled + smtpStackRef set + observed
+# path is populated.
+{{- $renderSmtpES := false }}
+{{- if and $state.smtp.enabled $state.smtp.smtpStackRef.name $smtpStackPath }}
+  {{- $renderSmtpES = true }}
+{{- end }}
+{{- $state = set $state "observed" (set $state.observed "renderSmtpExternalSecret" $renderSmtpES) }}
+
+# ==============================================================================
+# Helm release readiness
+# ==============================================================================
+{{- $relEntry := get $observed "helm-release-listmonk" | default dict }}
+{{- $relResource := $relEntry.resource | default dict }}
+{{- $relStatus := $relResource.status | default dict }}
+{{- $relReady := false }}
+{{- range ($relStatus.conditions | default list) }}
+  {{- if and (eq .type "Ready") (eq .status "True") }}
+    {{- $relReady = true }}
+  {{- end }}
+{{- end }}
+{{- $state = set $state "observed" (set $state.observed "helmReleaseReady" $relReady) }}
+
+# ==============================================================================
+# ExternalSecret readiness — `SecretSynced` condition on the ES resource
+# wrapped inside our Object MR.
+# ==============================================================================
+{{- $esEntry := get $observed "external-secret-smtp" | default dict }}
+{{- $esResource := $esEntry.resource | default dict }}
+{{- $esStatus := $esResource.status | default dict }}
+{{- $esAtProvider := $esStatus.atProvider | default dict }}
+{{- $esManifest := $esAtProvider.manifest | default dict }}
+{{- $esInner := $esManifest.status | default dict }}
+{{- $esSynced := false }}
+{{- range ($esInner.conditions | default list) }}
+  {{- if and (eq .type "Ready") (eq .status "True") }}
+    {{- $esSynced = true }}
+  {{- end }}
+{{- end }}
+{{- $state = set $state "observed" (set $state.observed "smtpSecretSynced" $esSynced) }}
+
+# ==============================================================================
+# Status surface
+# ==============================================================================
+{{- $adminURL := "" }}
+{{- $subscriptionURL := "" }}
+{{- $exposureURL := "" }}
+{{- $publicHost := $state.exposure.hostname | default $state.hostname }}
+{{- if $publicHost }}
+  {{- $adminURL = printf "https://%s/admin" $publicHost }}
+  {{- $subscriptionURL = printf "https://%s/subscription" $publicHost }}
+  {{- if $state.exposure.enabled }}
+    {{- $exposureURL = printf "https://%s" $publicHost }}
+  {{- end }}
+{{- end }}
+
+{{- $state = set $state "status" (dict
+  "ready" false
+  "tenancy" (dict "mode" $state.tenancy.mode)
+  "admin" (dict "url" $adminURL)
+  "subscriptionPage" (dict "url" $subscriptionURL)
+  "smtp" (dict
+    "sourceSmtpStack" (ternary $state.smtp.smtpStackRef.name "" $state.smtp.enabled)
+    "awsSecretsManagerPath" $smtpStackPath
+    "secretSynced" $esSynced
+    "fromAddress" $state.smtp.fromAddress
+  )
+  "database" (dict
+    "mode" $state.database.mode
+    "embedded" (dict
+      "psqlClusterName" $state.database.embedded.psqlClusterName
+      "appSecretName" $state.database.embedded.appSecretName
+      "host" $state.database.embedded.host
+      "database" $state.database.embedded.database
+    )
+  )
+  "oidc" (dict
+    "enabled" $state.oidc.enabled
+    "issuerURL" $state.oidc.issuerURL
+    "clientSecretRef" (dict
+      "name" (ternary (printf "%s-oidc-raw" $state.name) "" $state.oidc.enabled)
+      "namespace" (ternary $state.namespace "" $state.oidc.enabled)
+    )
+    "redirectURI" $state.oidc.redirectURI
+  )
+  "exposure" (dict
+    "enabled" $state.exposure.enabled
+    "hostname" $publicHost
+    "url" $exposureURL
+  )
+) }}

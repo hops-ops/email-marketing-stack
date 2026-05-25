@@ -1,0 +1,39 @@
+apiVersion: meta.dev.upbound.io/v2alpha1
+kind: Project
+metadata:
+  name: email-marketing-stack
+spec:
+  dependsOn:
+  - apiVersion: pkg.crossplane.io/v1
+    kind: Function
+    package: xpkg.crossplane.io/crossplane-contrib/function-auto-ready
+    version: '>=v0.6.4'
+  - apiVersion: pkg.crossplane.io/v1
+    kind: Provider
+    package: xpkg.crossplane.io/crossplane-contrib/provider-helm
+    version: '>=v1'
+  - apiVersion: pkg.crossplane.io/v1
+    kind: Provider
+    package: xpkg.crossplane.io/crossplane-contrib/provider-kubernetes
+    version: '>=v1'
+  description: EmailMarketingStack installs Listmonk as the platform's self-hosted
+    newsletter + marketing-campaign tool. v1 ships the platform-tenancy install shape
+    only — Namespace + embedded PSQLCluster (CNPG) + Listmonk Helm Release + an SMTP
+    ExternalSecret pulled from SMTPStack-published AWS SM credentials. OIDC, dual-surface
+    exposure, sidecar exporter, S3 media, bounce handling, and per-tenant TenantStack
+    integration land in subsequent iterations.
+  license: Apache-2.0
+  maintainer: Patrick Lee Scott <pat@patscott.io>
+  readme: |
+    # email-marketing-stack
+
+    Installs Listmonk into a Kubernetes cluster as the platform's newsletter
+    + marketing-campaign engine. Wraps the th0th/helm-charts `listmonk` chart
+    with a typed XRD that handles database wiring (embedded PSQLCluster by
+    default) and SMTP credential delivery (ExternalSecret consuming
+    `SMTPStack.status.smtp.awsSecretsManagerPath`).
+
+    v1 is platform-tenancy only and defers OIDC + public exposure to v2+.
+    See `specs/email-marketing-stack` in the project KB for the full design.
+  repository: ghcr.io/hops-ops/email-marketing-stack
+  source: github.com/hops-ops/email-marketing-stack

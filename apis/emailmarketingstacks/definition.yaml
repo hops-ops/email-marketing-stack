@@ -1,0 +1,451 @@
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: emailmarketingstacks.hops.ops.com.ai
+spec:
+  group: hops.ops.com.ai
+  names:
+    kind: EmailMarketingStack
+    plural: emailmarketingstacks
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    referenceable: true
+    served: true
+    schema:
+      openAPIV3Schema:
+        description: |
+          EmailMarketingStack installs Listmonk as the platform's self-hosted
+          newsletter + marketing-campaign tool. v1 composes the install shape
+          only: Namespace + embedded PSQLCluster + Listmonk Helm Release + an
+          SMTP ExternalSecret pulled from a SMTPStack-published AWS Secrets
+          Manager path. Tenancy is `platform` only — per-tenant instances
+          land in v4 via TenantStack.
+
+          OIDC, dual-surface (admin / public) exposure, the listmonk-exporter
+          sidecar, S3 media backend, bounce ingestion, and the optional
+          analytics-bridge subresource are deferred to v2+.
+        type: object
+        properties:
+          spec:
+            description: EmailMarketingStackSpec defines the desired state.
+            type: object
+            properties:
+              clusterName:
+                description: Name of the target cluster. Used as default for helmProviderConfigRef.name and kubernetesProviderConfigRef.name.
+                type: string
+              managementPolicies:
+                description: Management policies for all composed resources. Defaults to ["*"].
+                type: array
+                items:
+                  type: string
+                default:
+                - "*"
+              labels:
+                description: Custom labels applied to all managed resources. Merged with stack defaults (`hops.ops.com.ai/managed=true`, `hops.ops.com.ai/emailmarketingstack=<name>`).
+                type: object
+                additionalProperties:
+                  type: string
+                x-kubernetes-preserve-unknown-fields: true
+              helmProviderConfigRef:
+                description: Reference to the Helm ProviderConfig. Defaults to clusterName.
+                type: object
+                properties:
+                  name:
+                    type: string
+                  kind:
+                    type: string
+                    enum:
+                    - ProviderConfig
+                    - ClusterProviderConfig
+              kubernetesProviderConfigRef:
+                description: Reference to the Kubernetes ProviderConfig used to compose Namespace, ExternalSecret, and other K8s-only objects. Defaults to clusterName.
+                type: object
+                properties:
+                  name:
+                    type: string
+                  kind:
+                    type: string
+                    enum:
+                    - ProviderConfig
+                    - ClusterProviderConfig
+
+              namespace:
+                description: Namespace for the Listmonk install. Defaults to "marketing".
+                type: string
+                default: marketing
+              domain:
+                description: Parent DNS zone for derived defaults (e.g. "ops.com.ai"). v1 only uses this to derive `smtp.fromAddress` / `smtp.helloHostname` defaults; v2+ wires public exposure on `marketing.<domain>`.
+                type: string
+              hostname:
+                description: Public hostname for the marketing site. Defaults to `marketing.<domain>` when domain is set. v1 only stores this in status for diagnostics; v2 wires HTTPRoute + cert.
+                type: string
+              version:
+                description: Listmonk Helm chart version (hops-ops/listmonk-chart). Defaults to "0.2.0" (the post-install api-user-bootstrap hook ships in 0.2.0+).
+                type: string
+                default: "0.2.0"
+              chartValues:
+                description: Helm values merged on top of the stack-rendered defaults. Use this for overrides not covered by the typed surface.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              overrideAllValues:
+                description: Helm values that replace ALL stack-rendered defaults. Use as a total escape hatch.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+
+              # ============================================================
+              # Multi-tenancy mode. v1 only supports platform; per-tenant
+              # composition lands when TenantStack integration ships (v4).
+              # The typed surface is reserved so the schema doesn't bump
+              # when v4 lands.
+              # ============================================================
+              tenancy:
+                description: Tenancy mode for this instance. v1 supports `platform` only.
+                type: object
+                properties:
+                  mode:
+                    description: Tenancy mode. v1 only supports `platform`.
+                    type: string
+                    enum:
+                    - platform
+                    default: platform
+
+              # ============================================================
+              # Database — v1 supports embedded only. External DSN handoff
+              # arrives once a downstream user actually needs it.
+              # ============================================================
+              database:
+                description: Database backend for Listmonk.
+                type: object
+                properties:
+                  mode:
+                    description: Database mode. v1 only supports `embedded` — a PSQLCluster XR composed inside this stack.
+                    type: string
+                    enum:
+                    - embedded
+                    default: embedded
+                  embedded:
+                    description: Embedded PSQLCluster composed by this stack and owned by its lifecycle.
+                    type: object
+                    properties:
+                      instances:
+                        description: Number of Postgres instances. Defaults to 1.
+                        type: integer
+                        default: 1
+                      storage:
+                        description: Postgres data PVC sizing.
+                        type: object
+                        properties:
+                          size:
+                            description: PVC size. Defaults to "5Gi".
+                            type: string
+                            default: "5Gi"
+                          class:
+                            description: StorageClass. Defaults to "psql" (the PSQLStack-composed SC).
+                            type: string
+                            default: psql
+                      postgresql:
+                        description: Postgres version + tuning parameters.
+                        type: object
+                        properties:
+                          version:
+                            description: Postgres major version. Defaults to "17".
+                            type: string
+                            default: "17"
+                          parameters:
+                            description: postgres.conf parameters merged into the composed Cluster.spec.postgresql.parameters.
+                            type: object
+                            additionalProperties:
+                              type: string
+                            x-kubernetes-preserve-unknown-fields: true
+                      sslMode:
+                        description: SSL mode Listmonk uses to connect to Postgres. Defaults to "disable" (in-cluster, same namespace).
+                        type: string
+                        enum:
+                        - disable
+                        - allow
+                        - prefer
+                        - require
+                        - verify-ca
+                        - verify-full
+                        default: disable
+                      monitoring:
+                        description: Enable Prometheus PodMonitor via CNPG. Defaults on.
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                            default: true
+
+              # ============================================================
+              # SMTP — consumer of SMTPStack. v1 composes an ExternalSecret
+              # gated on observed SMTPStack.status.smtp.awsSecretsManagerPath.
+              # ============================================================
+              smtp:
+                description: Outbound SMTP wiring. Consumes credentials published by an upstream SMTPStack via AWS Secrets Manager + External Secrets Operator.
+                type: object
+                properties:
+                  enabled:
+                    description: Whether to render the SMTP ExternalSecret. Defaults true. When false, no SMTP wiring is composed — operator must configure SMTP via the Listmonk admin UI (or leave campaign sending unavailable).
+                    type: boolean
+                    default: true
+                  smtpStackRef:
+                    description: Reference to the upstream SMTPStack XR whose `status.smtp.awsSecretsManagerPath` provides the AWS SM path holding SES SMTP credentials. The ExternalSecret renders only after this XR reports the path.
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        description: Namespace of the SMTPStack XR. Defaults to this EmailMarketingStack's own namespace.
+                        type: string
+                  secretStoreName:
+                    description: ESO ClusterSecretStore that fronts AWS Secrets Manager on the target cluster. Defaults to "hops-aws-secrets-manager" (SecretStack convention).
+                    type: string
+                    default: hops-aws-secrets-manager
+                  smtpSecretName:
+                    description: Name of the K8s Secret synthesized by the ExternalSecret in the install namespace. Defaults to "listmonk-smtp".
+                    type: string
+                    default: listmonk-smtp
+                  fromAddress:
+                    description: From-address for outbound campaign mail. Defaults to "newsletter@<spec.domain>" when domain is set. Stored in status; chart does not consume in v1 (configure in admin UI).
+                    type: string
+                  fromName:
+                    description: From-name for outbound mail. Defaults to spec.domain when set. Stored in status; configure in admin UI in v1.
+                    type: string
+                  helloHostname:
+                    description: SMTP HELO hostname. Defaults to spec.domain when set.
+                    type: string
+                  maxConnections:
+                    description: Listmonk SMTP max connections. Defaults to 10.
+                    type: integer
+                    default: 10
+
+              # ============================================================
+              # OIDC — consumer of AuthStack. Listmonk v4.1+ supports OIDC
+              # natively (per feedback_app_level_oidc, no oauth2-proxy).
+              # When enabled, this stack composes a Zitadel ProviderConfig
+              # in the install namespace + a Zitadel Oidc Application MR
+              # via provider-upjet-zitadel; the resulting client_id /
+              # client_secret are written to a K8s Secret which the
+              # Listmonk chart's `extraEnvFrom` projects into the Pod.
+              # ============================================================
+              oidc:
+                description: Native OIDC SSO via an upstream OAuth provider (Zitadel by default). Consumes AuthStack-published iam-admin PAT to provision the Listmonk OIDC client declaratively.
+                type: object
+                properties:
+                  enabled:
+                    description: Enable native Listmonk OIDC. Default false.
+                    type: boolean
+                    default: false
+                  issuerURL:
+                    description: OIDC issuer URL (e.g. https://auth.ops.com.ai). Becomes Listmonk's `security.oidc.provider_url`.
+                    type: string
+                  providerName:
+                    description: Display name on the Listmonk sign-in page. Defaults to "Zitadel".
+                    type: string
+                    default: Zitadel
+                  awsSecretsManagerPath:
+                    description: AWS Secrets Manager path holding the Zitadel iam-admin PAT (the AuthStack PushSecret target — e.g. `push/<cluster>/zitadel-credentials`). Used to create the Zitadel `ProviderConfig` that authors the Listmonk OIDC Application MR.
+                    type: string
+                  accessTokenProperty:
+                    description: Property name inside the AWS SM secret JSON that holds the access token. Defaults to "access_token" (matches AuthStack PushSecret convention).
+                    type: string
+                    default: access_token
+                  zitadelProjectId:
+                    description: Numeric Zitadel Project ID under which the Listmonk OIDC Application is created. AuthStack publishes this via status; operator wires it through until cross-stack typed refs land.
+                    type: string
+                  zitadelDomain:
+                    description: Zitadel API/management hostname (no scheme, no port). Required for the in-namespace Zitadel ProviderConfig. Defaults to the host portion of `issuerURL`.
+                    type: string
+                  clientSecretName:
+                    description: Name of the K8s Secret (in the install namespace) where the Zitadel Oidc App writes `client_id` and `client_secret`. Defaults to "listmonk-oidc-client". The Listmonk Deployment consumes this via `extraEnvFrom`.
+                    type: string
+                    default: listmonk-oidc-client
+
+              # ============================================================
+              # Admin API user bootstrap (v3+). Chart-side post-install Hook
+              # in listmonk-chart >= v0.2.0 mints a `type=api` Listmonk user
+              # at install time and writes the credential to a Kubernetes
+              # Secret in the install namespace. Optionally republished to
+              # AWS Secrets Manager via the pushSecret block below for
+              # cross-cluster consumers (e.g. another cluster's
+              # Crossplane provider-listmonk).
+              # ============================================================
+              adminAuth:
+                description: Bootstrap an `api`-typed Listmonk user via the chart's post-install hook. Defaults on for v3+. Pairs with terraform-provider-listmonk / the upjet-generated provider-listmonk; the Secret keys (`username` + `token`) are compatible with Basic-Auth.
+                type: object
+                properties:
+                  createApiUser:
+                    description: Flip the chart's `adminAuth.createApiUser` value on. When true, the chart's post-install,post-upgrade hook mints a type=api Listmonk user (idempotent; type-collision-safe) and writes its credential to a Secret named `<release>-provider-creds` in the install namespace.
+                    type: boolean
+                    default: true
+                  apiUserName:
+                    description: Username for the api-typed Listmonk user the hook creates. Becomes the `username` key in the chart-managed Secret + the `users.username` row in the Listmonk DB.
+                    type: string
+                    default: crossplane-provider
+                  pushSecret:
+                    description: Republish the chart-managed credential Secret to AWS Secrets Manager via an ESO PushSecret. Off by default so non-AWS / non-platform operators don't hit failed reconciles. When on, consumers in other clusters use their own ExternalSecrets to pull from the canonical path.
+                    type: object
+                    properties:
+                      enabled:
+                        description: Render the ESO PushSecret. Requires the cluster to have ExternalSecrets Operator installed and a ClusterSecretStore configured against AWS Secrets Manager. Default false.
+                        type: boolean
+                        default: false
+                      secretStoreName:
+                        description: Name of the ClusterSecretStore to push through. Defaults to `hops-aws-secrets-manager` (the platform-wide convention).
+                        type: string
+                        default: hops-aws-secrets-manager
+                      path:
+                        description: AWS SM secret path (the remoteKey). Defaults to `push/<clusterName>/<stackName>-listmonk-credentials` per [[reference_aws_sm_push_tag_convention]]. Both `username` and `token` are written as properties of this single AWS SM secret.
+                        type: string
+
+              # ============================================================
+              # Exposure — public-internet ingress via Gateway API on the
+              # cluster's platform gateway. Path-scoped AuthorizationPolicy
+              # is NOT used: Listmonk handles its own auth on `/admin` and
+              # `/api` natively when OIDC is enabled, and the subscription /
+              # campaign / link / uploads paths are intentionally anonymous.
+              # ============================================================
+              exposure:
+                description: Public exposure via Gateway API HTTPRoute. App-level auth — no oauth2-proxy / AuthorizationPolicy.CUSTOM. v2 surface.
+                type: object
+                properties:
+                  enabled:
+                    description: Enable public exposure (HTTPRoute + DNS / cert wiring). Default false.
+                    type: boolean
+                    default: false
+                  domain:
+                    description: Parent DNS zone (e.g. "ops.com.ai"). Used by certificate + hostname defaults.
+                    type: string
+                  hostname:
+                    description: Public hostname for the marketing surface. Defaults to `marketing.<exposure.domain>` (or top-level spec.hostname).
+                    type: string
+                  gatewayRef:
+                    description: Reference to the cluster's platform Gateway. Required when `exposure.enabled` is true.
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                      sectionName:
+                        description: Gateway listener section name (typically the TLS listener).
+                        type: string
+                  certificate:
+                    description: cert-manager Certificate composed by this stack. Skip when the gateway already serves a wildcard covering `exposure.domain`.
+                    type: object
+                    properties:
+                      enabled:
+                        description: Render a cert-manager Certificate. Default false (pat-local has a wildcard `*.ops.com.ai` already).
+                        type: boolean
+                        default: false
+                      secretName:
+                        description: K8s Secret name where cert-manager stores the issued certificate. Defaults to "marketing-tls".
+                        type: string
+                        default: marketing-tls
+                      secretNamespace:
+                        description: Namespace where the cert Secret lands. Typically the gateway namespace (e.g. "istio-ingress").
+                        type: string
+                      issuerRef:
+                        description: cert-manager Issuer / ClusterIssuer reference.
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                          kind:
+                            type: string
+                            enum:
+                            - Issuer
+                            - ClusterIssuer
+                            default: ClusterIssuer
+
+            required:
+            - clusterName
+          status:
+            description: EmailMarketingStackStatus defines the observed state.
+            type: object
+            properties:
+              ready:
+                description: Overall readiness — true when all enabled composed resources are Ready.
+                type: boolean
+              tenancy:
+                description: Resolved tenancy mode.
+                type: object
+                properties:
+                  mode:
+                    type: string
+              admin:
+                description: Admin URL surface — port-forward URL in v1; HTTPRoute URL in v2+.
+                type: object
+                properties:
+                  url:
+                    type: string
+              subscriptionPage:
+                description: Public subscription page URL. Populated when hostname is set; otherwise empty in v1 (port-forward only).
+                type: object
+                properties:
+                  url:
+                    type: string
+              smtp:
+                description: SMTP wiring state for diagnostics.
+                type: object
+                properties:
+                  sourceSmtpStack:
+                    description: Name of the referenced SMTPStack XR. Empty when smtp.enabled is false.
+                    type: string
+                  awsSecretsManagerPath:
+                    description: AWS SM path observed from SMTPStack.status.smtp.awsSecretsManagerPath. Empty until SMTPStack reports it.
+                    type: string
+                  secretSynced:
+                    description: True when the ExternalSecret is observed SecretSynced.
+                    type: boolean
+                  fromAddress:
+                    type: string
+              oidc:
+                description: OIDC wiring state.
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  issuerURL:
+                    type: string
+                  clientSecretRef:
+                    description: K8s Secret holding the Zitadel-issued client_id + client_secret. Consumed by the chart via extraEnvFrom.
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                  redirectURI:
+                    description: Listmonk's OIDC callback URL. Register this on the OIDC provider side.
+                    type: string
+              exposure:
+                description: Public exposure state.
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  hostname:
+                    type: string
+                  url:
+                    type: string
+              database:
+                description: Database wiring state.
+                type: object
+                properties:
+                  mode:
+                    type: string
+                  embedded:
+                    type: object
+                    properties:
+                      psqlClusterName:
+                        type: string
+                      appSecretName:
+                        type: string
+                      host:
+                        type: string
+                      database:
+                        type: string
+        required:
+        - spec

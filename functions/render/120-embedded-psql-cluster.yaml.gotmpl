@@ -1,0 +1,71 @@
+# code: language=yaml
+#
+# Embedded PSQLCluster — Listmonk's Postgres backend.
+#
+# The composed PSQLCluster XR lives in this EmailMarketingStack XR's own
+# namespace (the control plane). Its `targetNamespace` points at the
+# Listmonk install namespace so the CNPG `<cluster>-app` Secret lands where
+# the Listmonk Deployment can mount it natively via env-var `secretKeyRef`.
+#
+# Lifecycle is atomic: deleting the EmailMarketingStack cascades to the
+# PSQLCluster, which tears down the CNPG Cluster.
+
+{{- $db := $state.database }}
+{{- $emb := $db.embedded }}
+
+{{- if eq $db.mode "embedded" }}
+---
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: PSQLCluster
+metadata:
+  name: {{ $emb.psqlClusterName }}
+  namespace: {{ $emb.xrNamespace }}
+  annotations:
+    {{ setResourceNameAnnotation "embedded-psql-cluster" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  clusterName: {{ $state.clusterName }}
+  targetNamespace: {{ $state.namespace }}
+  labels: {{ $state.labels | toJson }}
+  kubernetesProviderConfigRef:
+    name: {{ $state.kubernetesProviderConfigRef.name }}
+    kind: {{ $state.kubernetesProviderConfigRef.kind }}
+  instances: {{ $emb.instances }}
+  storage:
+    size: {{ $emb.storage.size | quote }}
+    class: {{ $emb.storage.class | quote }}
+  {{- if $emb.postgresql }}
+  postgresql:
+    {{- toYaml $emb.postgresql | nindent 4 }}
+  {{- end }}
+  app:
+    role: {{ $emb.role | quote }}
+    database: {{ $emb.database | quote }}
+  monitoring:
+    enabled: {{ $emb.monitoring.enabled }}
+
+# Gate the Listmonk Helm release deletion ahead of the embedded PSQLCluster.
+# Listmonk's initContainer runs `--install --idempotent --yes` which needs
+# DB access; without this Usage, deletion order is undefined and the init
+# Pod can hang in CreateContainerConfigError.
+---
+apiVersion: protection.crossplane.io/v1beta1
+kind: Usage
+metadata:
+  name: {{ $state.name }}-delete-listmonk-before-embedded-psql-cluster
+  annotations:
+    {{ setResourceNameAnnotation "usage-listmonk-embedded-psql-cluster" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  replayDeletion: true
+  of:
+    apiVersion: hops.ops.com.ai/v1alpha1
+    kind: PSQLCluster
+    resourceRef:
+      name: {{ $emb.psqlClusterName }}
+  by:
+    apiVersion: helm.m.crossplane.io/v1beta1
+    kind: Release
+    resourceRef:
+      name: {{ $state.name }}-listmonk
+{{- end }}

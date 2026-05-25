@@ -1,0 +1,64 @@
+# Local-dev manifest for pat-local (colima).
+#
+# Pat-local pairs with the AWS EKS cluster; the cluster's hops-ops
+# ProviderConfigs (helm, kubernetes) target the EKS data plane.
+#
+# v2 features (OIDC + public exposure) are enabled here. Prereqs on the
+# cluster:
+#   - AuthStack installed and reporting iam-admin PAT at AWS SM path
+#     `push/pat-local/zitadel-credentials` (operator runs
+#     `hops auth bootstrap pat-local` once).
+#   - Zitadel project `platform-services` (id 373410628280264299) exists,
+#     matching the observe-stack convention.
+#   - Cloudflare wildcard `*.ops.com.ai` cert already on the platform
+#     Gateway (so `exposure.certificate.enabled` stays false).
+#   - IstioStack platform Gateway running in istio-ingress namespace.
+#
+# SMTPStack is still parallel work; the SMTP ExternalSecret stays
+# unrendered until that XR reports `status.smtp.awsSecretsManagerPath`.
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: EmailMarketingStack
+metadata:
+  name: marketing
+  namespace: default
+spec:
+  clusterName: pat-local
+  domain: ops.com.ai
+  labels:
+    team: platform
+    environment: dev
+  database:
+    embedded:
+      storage:
+        size: 5Gi
+      instances: 1
+
+  # SMTP — gated on SMTPStack arrival.
+  smtp:
+    enabled: true
+    smtpStackRef:
+      name: smtp
+      namespace: default
+    fromAddress: newsletter@ops.com.ai
+    fromName: Hops Newsletter
+    helloHostname: ops.com.ai
+
+  # OIDC — Listmonk v6 native SSO via Zitadel.
+  oidc:
+    enabled: true
+    issuerURL: https://auth.ops.com.ai
+    providerName: Zitadel
+    awsSecretsManagerPath: push/pat-local/zitadel-credentials
+    accessTokenProperty: access_token
+    zitadelProjectId: "373410628280264299"
+
+  # Public exposure via the cluster's platform Gateway. Single HTTPRoute,
+  # app-level auth (Listmonk enforces /admin + /api). Wildcard cert
+  # already on the gateway.
+  exposure:
+    enabled: true
+    domain: ops.com.ai
+    gatewayRef:
+      name: platform
+      namespace: istio-ingress
+      sectionName: https-apex

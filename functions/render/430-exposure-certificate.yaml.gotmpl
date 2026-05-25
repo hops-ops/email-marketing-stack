@@ -1,0 +1,46 @@
+# code: language=yaml
+#
+# Optional cert-manager Certificate for the exposure hostname.
+#
+# Skip when the Gateway HTTPS listener already serves an existing
+# wildcard covering `exposure.domain` (the common case on pat-local
+# where `*.ops.com.ai` is already provisioned by cloudflare-dns-stack).
+# In that case the gateway picks the right SNI cert automatically.
+#
+# When enabled, the cert lands in `exposure.certificate.secretNamespace`
+# (typically the gateway namespace) so the platform Gateway can
+# reference it from a listener.
+
+{{- $exp := $state.exposure }}
+{{- $cert := $exp.certificate }}
+
+{{- if and $exp.enabled $cert.enabled }}
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: {{ $state.name }}-exposure-certificate
+  annotations:
+    {{ setResourceNameAnnotation "exposure-certificate" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  managementPolicies: {{ $state.managementPolicies | toJson }}
+  forProvider:
+    manifest:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: {{ $cert.secretName }}
+        namespace: {{ $cert.secretNamespace }}
+        labels: {{ $state.labels | toJson }}
+      spec:
+        secretName: {{ $cert.secretName }}
+        issuerRef:
+          name: {{ $cert.issuerRef.name }}
+          kind: {{ $cert.issuerRef.kind }}
+        dnsNames:
+        - {{ $exp.hostname | quote }}
+  providerConfigRef:
+    name: {{ $state.kubernetesProviderConfigRef.name }}
+    kind: {{ $state.kubernetesProviderConfigRef.kind }}
+{{- end }}

@@ -1,0 +1,281 @@
+# code: language=yaml
+#
+# Initialize $state with spec defaults.
+#
+# v1 surface: platform tenancy only, embedded PSQLCluster only, SMTP wiring
+# via SMTPStack-referenced ExternalSecret. OIDC / exposure / exporter /
+# media / bounces / tenancy.mode=tenant land in later iterations.
+#
+
+{{- $xr := getCompositeResource . }}
+{{- $spec := $xr.spec | default dict }}
+{{- $metadata := $xr.metadata | default dict }}
+
+# ==============================================================================
+# Core defaults
+# ==============================================================================
+{{- $name := $metadata.name | default "marketing" }}
+{{- $clusterName := $spec.clusterName | default $name }}
+{{- $namespace := $spec.namespace | default "marketing" }}
+{{- $managementPolicies := $spec.managementPolicies | default (list "*") }}
+
+# Default labels
+{{- $defaultLabels := dict
+  "hops.ops.com.ai/managed" "true"
+  (printf "hops.ops.com.ai/%s" (lower $xr.kind)) $name
+}}
+{{- $labels := merge $defaultLabels ($spec.labels | default dict) }}
+
+# Helm provider config
+{{- $helmProviderConfigRef := $spec.helmProviderConfigRef | default dict }}
+{{- $helmProviderConfigRef = dict
+  "name" ($helmProviderConfigRef.name | default $clusterName)
+  "kind" ($helmProviderConfigRef.kind | default "ProviderConfig")
+}}
+
+# Kubernetes provider config
+{{- $k8sProviderConfigRef := $spec.kubernetesProviderConfigRef | default dict }}
+{{- $k8sProviderConfigRef = dict
+  "name" ($k8sProviderConfigRef.name | default $clusterName)
+  "kind" ($k8sProviderConfigRef.kind | default "ProviderConfig")
+}}
+
+# Tenancy (v1: platform only — the field is reserved for v4 TenantStack
+# integration but the only legal value today is "platform"). Default the
+# field if missing.
+{{- $tenancy := $spec.tenancy | default dict }}
+{{- $tenancyMode := $tenancy.mode | default "platform" }}
+
+# Domain / hostname — only used for status / SMTP defaults in v1.
+{{- $domain := $spec.domain | default "" }}
+{{- $hostname := $spec.hostname | default "" }}
+{{- if and (not $hostname) $domain }}
+  {{- $hostname = printf "marketing.%s" $domain }}
+{{- end }}
+
+# Chart pin (0.2.0+ ships the post-install api-user bootstrap hook)
+{{- $chartVersion := $spec.version | default "0.2.0" }}
+{{- $chartValues := $spec.chartValues | default dict }}
+{{- $overrideAllValues := $spec.overrideAllValues | default dict }}
+
+# ==============================================================================
+# Database — v1 embedded only.
+#
+# Composes a PSQLCluster XR named "<name>-pg" in the EmailMarketingStack XR's
+# own namespace. The composed PSQLCluster's `targetNamespace` is wired to the
+# Listmonk install namespace so the CNPG `<cluster>-app` Secret lands where
+# the Listmonk Deployment can read it via env-var `secretKeyRef`.
+# ==============================================================================
+{{- $db := $spec.database | default dict }}
+{{- $dbMode := $db.mode | default "embedded" }}
+{{- $emb := $db.embedded | default dict }}
+{{- $embStorage := $emb.storage | default dict }}
+{{- if not $embStorage.size }}{{- $embStorage = set $embStorage "size" "5Gi" }}{{- end }}
+{{- if not $embStorage.class }}{{- $embStorage = set $embStorage "class" "psql" }}{{- end }}
+{{- $embPostgres := $emb.postgresql | default dict }}
+{{- if not $embPostgres.version }}{{- $embPostgres = set $embPostgres "version" "17" }}{{- end }}
+{{- $embInstances := 1 }}
+{{- if hasKey $emb "instances" }}{{- $embInstances = $emb.instances }}{{- end }}
+{{- $embSslMode := $emb.sslMode | default "disable" }}
+{{- $embMonitoring := $emb.monitoring | default dict }}
+{{- $embMonitoringEnabled := true }}
+{{- if hasKey $embMonitoring "enabled" }}{{- $embMonitoringEnabled = $embMonitoring.enabled }}{{- end }}
+
+{{- $embPsqlName := printf "%s-pg" $name }}
+{{- $embPsqlXrNamespace := $metadata.namespace | default "default" }}
+{{- $embAppRole := "listmonk" }}
+{{- $embAppDatabase := "listmonk" }}
+{{- $embAppSecretName := printf "%s-app" $embPsqlName }}
+{{- $embHost := printf "%s-rw.%s.svc.cluster.local" $embPsqlName $namespace }}
+
+# ==============================================================================
+# SMTP — consumer of SMTPStack. ExternalSecret renders only when smtpStackRef
+# is set AND the referenced SMTPStack reports
+# `status.smtp.awsSecretsManagerPath` in the observed state. See feedback
+# `crossplane composition gates` — gate on observed status rather than
+# engineering external readiness signals.
+# ==============================================================================
+{{- $smtp := $spec.smtp | default dict }}
+{{- $smtpEnabled := true }}
+{{- if hasKey $smtp "enabled" }}{{- $smtpEnabled = $smtp.enabled }}{{- end }}
+{{- $smtpStackRef := $smtp.smtpStackRef | default dict }}
+{{- $smtpStackName := $smtpStackRef.name | default "" }}
+{{- $smtpStackNamespace := $smtpStackRef.namespace | default $embPsqlXrNamespace }}
+{{- $smtpStoreName := $smtp.secretStoreName | default "hops-aws-secrets-manager" }}
+{{- $smtpSecretName := $smtp.smtpSecretName | default "listmonk-smtp" }}
+{{- $smtpFromAddress := $smtp.fromAddress | default "" }}
+{{- if and (not $smtpFromAddress) $domain }}
+  {{- $smtpFromAddress = printf "newsletter@%s" $domain }}
+{{- end }}
+{{- $smtpFromName := $smtp.fromName | default $domain }}
+{{- $smtpHelloHostname := $smtp.helloHostname | default $domain }}
+{{- $smtpMaxConnections := 10 }}
+{{- if hasKey $smtp "maxConnections" }}{{- $smtpMaxConnections = $smtp.maxConnections }}{{- end }}
+
+# ==============================================================================
+# OIDC — Listmonk v4.1+ native SSO. When enabled, composition creates:
+#   - ExternalSecret pulling Zitadel iam-admin PAT from AWS SM
+#   - Zitadel ProviderConfig (in install ns) using that PAT
+#   - Zitadel Oidc Application MR via provider-upjet-zitadel; the MR's
+#     writeConnectionSecretToRef lands client_id + client_secret in a
+#     K8s Secret that the chart's extraEnvFrom projects into the Pod.
+# ==============================================================================
+{{- $oidc := $spec.oidc | default dict }}
+{{- $oidcEnabled := false }}
+{{- if hasKey $oidc "enabled" }}{{- $oidcEnabled = $oidc.enabled }}{{- end }}
+{{- $oidcIssuerURL := $oidc.issuerURL | default "" }}
+{{- $oidcProviderName := $oidc.providerName | default "Zitadel" }}
+{{- $oidcAwsSecretsManagerPath := $oidc.awsSecretsManagerPath | default "" }}
+{{- $oidcAccessTokenProperty := $oidc.accessTokenProperty | default "access_token" }}
+{{- $oidcZitadelProjectId := $oidc.zitadelProjectId | default "" }}
+{{- $oidcClientSecretName := $oidc.clientSecretName | default "listmonk-oidc-client" }}
+# Zitadel host: explicit override, else strip scheme from issuerURL.
+{{- $oidcZitadelDomain := $oidc.zitadelDomain | default "" }}
+{{- if and (not $oidcZitadelDomain) $oidcIssuerURL }}
+  {{- $oidcZitadelDomain = $oidcIssuerURL | replace "https://" "" | replace "http://" "" | trimSuffix "/" }}
+{{- end }}
+
+# ==============================================================================
+# Admin API user bootstrap — chart-side (listmonk-chart v0.2.0+'s
+# post-install,post-upgrade Hook). The chart mints a `type=api` Listmonk
+# user (default username: `crossplane-provider`) at install time + writes
+# the credential to `<release>-provider-creds` Secret in the install ns.
+# v3 default: ON. The PushSecret block below republishes that Secret to
+# AWS SM for cross-cluster consumers (e.g. Crossplane provider-listmonk
+# in another cluster).
+# ==============================================================================
+{{- $adminAuth := $spec.adminAuth | default dict }}
+{{- $adminAuthCreate := true }}
+{{- if hasKey $adminAuth "createApiUser" }}{{- $adminAuthCreate = $adminAuth.createApiUser }}{{- end }}
+{{- $adminAuthApiUserName := $adminAuth.apiUserName | default "crossplane-provider" }}
+# The chart's `listmonk.providerCredsSecretName` helper resolves to
+# `<release>-provider-creds`. The Helm Release in 200-helm-release-listmonk
+# is named `<name>-listmonk`, so the chart-created Secret lands at
+# `<name>-listmonk-provider-creds`.
+{{- $adminAuthSecretName := printf "%s-listmonk-provider-creds" $name }}
+
+# PushSecret to AWS SM (gated; defaults off so non-AWS / non-platform
+# operators are not surprised by attempted PushSecret renders).
+{{- $adminAuthPush := $adminAuth.pushSecret | default dict }}
+{{- $adminAuthPushEnabled := false }}
+{{- if hasKey $adminAuthPush "enabled" }}{{- $adminAuthPushEnabled = $adminAuthPush.enabled }}{{- end }}
+{{- $adminAuthPushStore := $adminAuthPush.secretStoreName | default "hops-aws-secrets-manager" }}
+{{- $adminAuthPushPath := $adminAuthPush.path | default (printf "push/%s/%s-listmonk-credentials" $clusterName $name) }}
+
+# ==============================================================================
+# Exposure — Gateway API HTTPRoute, app-level auth (no oauth2-proxy).
+# Path-scoped AuthorizationPolicy is NOT composed: Listmonk enforces its
+# own auth on /admin + /api when OIDC is enabled.
+# ==============================================================================
+{{- $exp := $spec.exposure | default dict }}
+{{- $expEnabled := false }}
+{{- if hasKey $exp "enabled" }}{{- $expEnabled = $exp.enabled }}{{- end }}
+{{- $expDomain := $exp.domain | default $domain }}
+{{- $expHostname := $exp.hostname | default $hostname }}
+{{- if and (not $expHostname) $expDomain }}
+  {{- $expHostname = printf "marketing.%s" $expDomain }}
+{{- end }}
+{{- $expGatewayRef := $exp.gatewayRef | default dict }}
+{{- $expCert := $exp.certificate | default dict }}
+{{- $expCertEnabled := false }}
+{{- if hasKey $expCert "enabled" }}{{- $expCertEnabled = $expCert.enabled }}{{- end }}
+{{- $expCertSecretName := $expCert.secretName | default "marketing-tls" }}
+{{- $expCertSecretNamespace := $expCert.secretNamespace | default "" }}
+{{- $expCertIssuerRef := $expCert.issuerRef | default dict }}
+
+# OIDC redirect URI — Listmonk uses `/auth/oidc` per upstream docs.
+{{- $oidcRedirectURI := "" }}
+{{- if and $oidcEnabled $expHostname }}
+  {{- $oidcRedirectURI = printf "https://%s/auth/oidc" $expHostname }}
+{{- end }}
+
+# ==============================================================================
+# Initialize $state
+# ==============================================================================
+{{- $state := dict
+  "name" $name
+  "kind" $xr.kind
+  "apiVersion" $xr.apiVersion
+  "clusterName" $clusterName
+  "xrNamespace" ($metadata.namespace | default "default")
+  "namespace" $namespace
+  "managementPolicies" $managementPolicies
+  "labels" $labels
+  "helmProviderConfigRef" $helmProviderConfigRef
+  "kubernetesProviderConfigRef" $k8sProviderConfigRef
+  "tenancy" (dict "mode" $tenancyMode)
+  "domain" $domain
+  "hostname" $hostname
+  "chartVersion" $chartVersion
+  "chartValues" $chartValues
+  "overrideAllValues" $overrideAllValues
+  "database" (dict
+    "mode" $dbMode
+    "embedded" (dict
+      "psqlClusterName" $embPsqlName
+      "xrNamespace" $embPsqlXrNamespace
+      "host" $embHost
+      "port" 5432
+      "database" $embAppDatabase
+      "role" $embAppRole
+      "appSecretName" $embAppSecretName
+      "sslMode" $embSslMode
+      "instances" $embInstances
+      "storage" $embStorage
+      "postgresql" $embPostgres
+      "monitoring" (dict "enabled" $embMonitoringEnabled)
+    )
+  )
+  "smtp" (dict
+    "enabled" $smtpEnabled
+    "smtpStackRef" (dict "name" $smtpStackName "namespace" $smtpStackNamespace)
+    "secretStoreName" $smtpStoreName
+    "smtpSecretName" $smtpSecretName
+    "fromAddress" $smtpFromAddress
+    "fromName" $smtpFromName
+    "helloHostname" $smtpHelloHostname
+    "maxConnections" $smtpMaxConnections
+  )
+  "oidc" (dict
+    "enabled" $oidcEnabled
+    "issuerURL" $oidcIssuerURL
+    "providerName" $oidcProviderName
+    "awsSecretsManagerPath" $oidcAwsSecretsManagerPath
+    "accessTokenProperty" $oidcAccessTokenProperty
+    "zitadelProjectId" $oidcZitadelProjectId
+    "zitadelDomain" $oidcZitadelDomain
+    "clientSecretName" $oidcClientSecretName
+    "redirectURI" $oidcRedirectURI
+  )
+  "adminAuth" (dict
+    "createApiUser" $adminAuthCreate
+    "apiUserName" $adminAuthApiUserName
+    "providerCredsSecretName" $adminAuthSecretName
+    "pushSecret" (dict
+      "enabled" $adminAuthPushEnabled
+      "secretStoreName" $adminAuthPushStore
+      "path" $adminAuthPushPath
+    )
+  )
+  "exposure" (dict
+    "enabled" $expEnabled
+    "domain" $expDomain
+    "hostname" $expHostname
+    "gatewayRef" (dict
+      "name" ($expGatewayRef.name | default "")
+      "namespace" ($expGatewayRef.namespace | default "")
+      "sectionName" ($expGatewayRef.sectionName | default "")
+    )
+    "certificate" (dict
+      "enabled" $expCertEnabled
+      "secretName" $expCertSecretName
+      "secretNamespace" $expCertSecretNamespace
+      "issuerRef" (dict
+        "name" ($expCertIssuerRef.name | default "")
+        "kind" ($expCertIssuerRef.kind | default "ClusterIssuer")
+      )
+    )
+  )
+  "observed" (dict)
+  "status" (dict)
+}}

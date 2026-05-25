@@ -1,0 +1,174 @@
+# code: language=yaml
+#
+# Helm Release: Listmonk (hops-ops/listmonk-chart — fork of
+# redzumi/listmonk-chart with extraEnvFrom + extraEnv + [security.oidc]
+# additions, published at https://hops-ops.github.io/listmonk-chart).
+#
+# Chart specifics (Listmonk v6.0.0):
+#   - Renders a Listmonk Deployment + Service + ConfigMap. Embedded
+#     Postgres StatefulSet is DISABLED because this stack composes a
+#     CNPG-backed PSQLCluster.
+#   - DB credentials flow via `database.existingSecret` — the chart reads
+#     `password` (default `passwordKey`) and projects it as
+#     `LISTMONK_db__password` env. The CNPG `<cluster>-app` Secret has
+#     a `password` key, so this matches without an override.
+#   - When `oidc.enabled`, the chart's configmap emits a
+#     `[security.oidc]` block + matching `LISTMONK_security__oidc__*`
+#     env vars (provider URL + provider name). The OIDC client_id +
+#     client_secret are layered separately as explicit `extraEnv`
+#     entries pulled from the Zitadel-managed connection Secret (the
+#     provider-upjet-zitadel `Oidc` MR writes those keys as
+#     `attribute.client_id` / `attribute.client_secret`).
+
+{{- $db := $state.database }}
+{{- $emb := $db.embedded }}
+{{- $smtp := $state.smtp }}
+{{- $oidc := $state.oidc }}
+{{- $exp := $state.exposure }}
+
+# Build the extraEnv list incrementally. Listmonk's koanf loader picks up
+# `LISTMONK_<section>__<key>` env at startup; we add app.root_url when
+# exposure is enabled so the OIDC redirect URI Listmonk sends to the IdP
+# matches the public hostname (otherwise it falls back to app.address
+# which is `0.0.0.0:9000`).
+{{- $extraEnv := list }}
+{{- if and $exp.enabled $exp.hostname }}
+  {{- $extraEnv = append $extraEnv (dict
+    "name" "LISTMONK_app__root_url"
+    "value" (printf "https://%s" $exp.hostname)
+  ) }}
+{{- end }}
+
+# Build chart values
+{{- $chartDefaults := dict
+  "replicaCount" $emb.instances
+  "postgres" (dict "enabled" false)
+  "init" (dict "enabled" true "runAsHook" false)
+  "resources" (dict
+    "requests" (dict "cpu" "15m" "memory" "100Mi")
+    "limits" (dict "cpu" "500m" "memory" "512Mi")
+  )
+  "database" (dict
+    "host" $emb.host
+    "port" $emb.port
+    "name" $emb.database
+    "user" $emb.role
+    "sslMode" $emb.sslMode
+    "existingSecret" $emb.appSecretName
+    "passwordKey" "password"
+  )
+}}
+
+# SMTP — chart's smtp.existingSecret slot is wired but the chart
+# Deployment doesn't yet project the Secret into env vars natively for
+# the LISTMONK_smtp__0__* keys Listmonk needs. v2 operator path is the
+# admin UI; the rendered K8s Secret materializes regardless.
+{{- if $state.observed.renderSmtpExternalSecret }}
+  {{- $chartDefaults = mergeOverwrite $chartDefaults (dict
+    "smtp" (dict
+      "enabled" true
+      "existingSecret" $smtp.smtpSecretName
+      "from" $smtp.fromAddress
+      "helloHostname" $smtp.helloHostname
+      "maxConns" $smtp.maxConnections
+    )
+  ) }}
+{{- end }}
+
+# OIDC — when enabled, configure the chart's [security.oidc] block and
+# layer extraEnv entries projecting client_id + client_secret from the
+# Zitadel-managed connection Secret. Listmonk's koanf loader picks up
+# the env vars at startup, so `oidc.enabled` flips to true at the app
+# level on the next Pod restart after the Zitadel App is Ready.
+{{- if $oidc.enabled }}
+  {{- $rawSecretName := printf "%s-oidc-raw" $state.name }}
+  {{- $extraEnv = append $extraEnv (dict
+    "name" "LISTMONK_security__oidc__client_id"
+    "valueFrom" (dict "secretKeyRef" (dict
+      "name" $rawSecretName
+      "key" "attribute.client_id"
+    ))
+  ) }}
+  {{- $extraEnv = append $extraEnv (dict
+    "name" "LISTMONK_security__oidc__client_secret"
+    "valueFrom" (dict "secretKeyRef" (dict
+      "name" $rawSecretName
+      "key" "attribute.client_secret"
+    ))
+  ) }}
+  {{- $chartDefaults = mergeOverwrite $chartDefaults (dict
+    "oidc" (dict
+      "enabled" true
+      "providerUrl" $oidc.issuerURL
+      "providerName" $oidc.providerName
+    )
+  ) }}
+{{- end }}
+
+# Apply the assembled extraEnv list to the chart values, if any.
+{{- if gt (len $extraEnv) 0 }}
+  {{- $chartDefaults = mergeOverwrite $chartDefaults (dict "extraEnv" $extraEnv) }}
+{{- end }}
+
+# Admin API user bootstrap — flips on the chart's post-install hook that
+# mints the `type=api` user + writes the credential Secret. v3 default;
+# consumer can override via spec.chartValues.adminAuth.createApiUser=false
+# (mergeOverwrite below lets user values trump composition defaults).
+{{- if $state.adminAuth.createApiUser }}
+  {{- $chartDefaults = mergeOverwrite $chartDefaults (dict
+    "adminAuth" (dict
+      "createApiUser" true
+      "apiUserName" $state.adminAuth.apiUserName
+    )
+  ) }}
+{{- end }}
+
+---
+apiVersion: helm.m.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: {{ $state.name }}-listmonk
+  annotations:
+    {{ setResourceNameAnnotation "helm-release-listmonk" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  managementPolicies: {{ $state.managementPolicies | toJson }}
+  forProvider:
+    chart:
+      name: listmonk
+      repository: https://hops-ops.github.io/listmonk-chart
+      version: {{ $state.chartVersion }}
+    namespace: {{ $state.namespace }}
+    {{- if $state.overrideAllValues }}
+    values:
+      {{- toYaml $state.overrideAllValues | nindent 6 }}
+    {{- else }}
+    {{- $merged := mergeOverwrite $chartDefaults $state.chartValues }}
+    values:
+      {{- toYaml $merged | nindent 6 }}
+    {{- end }}
+  rollbackLimit: 3
+  providerConfigRef:
+    name: {{ $state.helmProviderConfigRef.name }}
+    kind: {{ $state.helmProviderConfigRef.kind }}
+
+---
+apiVersion: protection.crossplane.io/v1beta1
+kind: Usage
+metadata:
+  name: {{ $state.name }}-delete-listmonk-before-namespace
+  annotations:
+    {{ setResourceNameAnnotation "usage-listmonk-namespace" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  replayDeletion: true
+  of:
+    apiVersion: kubernetes.m.crossplane.io/v1alpha1
+    kind: Object
+    resourceRef:
+      name: {{ $state.name }}-namespace
+  by:
+    apiVersion: helm.m.crossplane.io/v1beta1
+    kind: Release
+    resourceRef:
+      name: {{ $state.name }}-listmonk

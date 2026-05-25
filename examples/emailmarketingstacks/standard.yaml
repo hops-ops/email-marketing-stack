@@ -1,0 +1,24 @@
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: EmailMarketingStack
+metadata:
+  name: marketing
+  namespace: default
+spec:
+  clusterName: my-cluster
+  domain: ops.com.ai
+  labels:
+    team: platform
+    environment: prod
+  database:
+    embedded:
+      storage:
+        size: 10Gi
+      instances: 1
+  smtp:
+    enabled: true
+    smtpStackRef:
+      name: smtp
+      namespace: default
+    fromAddress: newsletter@ops.com.ai
+    fromName: Hops Newsletter
+    helloHostname: ops.com.ai

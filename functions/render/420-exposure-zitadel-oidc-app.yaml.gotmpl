@@ -1,0 +1,78 @@
+# code: language=yaml
+#
+# Zitadel OIDC Application MR for the Listmonk client.
+#
+# Single client — Listmonk speaks OIDC natively, so no oauth2-proxy
+# client is needed (contrast with observe-stack, which composes both an
+# ext_authz oauth2-proxy client for Prometheus/Alertmanager/Opencost AND
+# an app-level Grafana client). The redirect URI is the path Listmonk
+# expects at `/auth/oidc` (per Listmonk OIDC docs).
+#
+# writeConnectionSecretToRef lands `client_id` + `client_secret` (under
+# those exact keys) in the install namespace. The 200-helm-release-
+# listmonk template references that Secret via the chart's
+# `extraEnvFrom` so the values are projected as
+# `LISTMONK_security__oidc__client_id` /
+# `LISTMONK_security__oidc__client_secret` env vars on the Listmonk
+# Pod — but only if the chart's Secret name + key names match what
+# Listmonk's koanf loader expects.
+#
+# Important: the Crossplane provider writes the secret with the exact
+# keys Zitadel returns (`client_id`, `client_secret`). The chart fork's
+# extraEnvFrom uses `secretRef: name: <secret>`, which loads every key
+# of the Secret as a separate env var — so we need to alias the keys.
+# We accomplish this with `target.template` on an ExternalSecret in a
+# follow-up step (see 425), keeping the renamed secret separate so the
+# original raw-key Secret remains for diagnostics.
+
+{{- $oidc := $state.oidc }}
+
+{{- if and $oidc.enabled $oidc.awsSecretsManagerPath $oidc.zitadelProjectId $state.exposure.hostname }}
+{{- $rawClientSecretName := printf "%s-oidc-raw" $state.name }}
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: {{ $state.name }}-exposure-oidc-app
+  annotations:
+    {{ setResourceNameAnnotation "exposure-oidc-app" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  managementPolicies: {{ $state.managementPolicies | toJson }}
+  forProvider:
+    manifest:
+      apiVersion: application.zitadel.m.crossplane.io/v1alpha1
+      kind: Oidc
+      metadata:
+        name: {{ printf "%s-listmonk" $state.namespace }}
+        namespace: {{ $state.namespace }}
+        labels: {{ $state.labels | toJson }}
+      spec:
+        forProvider:
+          name: {{ printf "%s-listmonk" $state.namespace | quote }}
+          projectId: {{ $oidc.zitadelProjectId | quote }}
+          appType: OIDC_APP_TYPE_WEB
+          authMethodType: OIDC_AUTH_METHOD_TYPE_BASIC
+          grantTypes:
+          - OIDC_GRANT_TYPE_AUTHORIZATION_CODE
+          - OIDC_GRANT_TYPE_REFRESH_TOKEN
+          responseTypes:
+          - OIDC_RESPONSE_TYPE_CODE
+          redirectUris:
+          - {{ $oidc.redirectURI | quote }}
+          postLogoutRedirectUris:
+          - {{ printf "https://%s/" $state.exposure.hostname | quote }}
+          accessTokenType: OIDC_TOKEN_TYPE_BEARER
+          accessTokenRoleAssertion: true
+          idTokenRoleAssertion: true
+          idTokenUserinfoAssertion: true
+          devMode: false
+        writeConnectionSecretToRef:
+          name: {{ $rawClientSecretName }}
+        providerConfigRef:
+          name: zitadel-email-marketing-stack
+          kind: ProviderConfig
+  providerConfigRef:
+    name: {{ $state.kubernetesProviderConfigRef.name }}
+    kind: {{ $state.kubernetesProviderConfigRef.kind }}
+{{- end }}

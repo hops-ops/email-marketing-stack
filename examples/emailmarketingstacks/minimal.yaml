@@ -1,0 +1,7 @@
+apiVersion: hops.ops.com.ai/v1alpha1
+kind: EmailMarketingStack
+metadata:
+  name: marketing
+  namespace: default
+spec:
+  clusterName: default
