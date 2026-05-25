@@ -80,6 +80,17 @@ spec:
               hostname:
                 description: Public hostname for the marketing site. Defaults to `marketing.<domain>` when domain is set. v1 only stores this in status for diagnostics; v2 wires HTTPRoute + cert.
                 type: string
+              siteName:
+                description: |
+                  Brand name shown in the Listmonk admin UI + subscriber-facing
+                  pages (subscription confirmation, unsubscribe, public archive).
+                  Reconciled into Listmonk's `app.site_name` settings row by the
+                  v3.1+ AppSettings MR when `adminAuth.createApiUser` is on.
+                  When unset, the AppSettings MR falls back to
+                  `<domain> Newsletter`; when there's no domain either, the
+                  field is unmanaged and Listmonk's chart-rendered default
+                  ("Mailing list") stays in place.
+                type: string
               version:
                 description: Listmonk Helm chart version (hops-ops/listmonk-chart). Defaults to "0.2.0" (the post-install api-user-bootstrap hook ships in 0.2.0+).
                 type: string

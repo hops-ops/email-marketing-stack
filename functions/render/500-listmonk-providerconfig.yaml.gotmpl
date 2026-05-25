@@ -1,0 +1,55 @@
+# code: language=yaml
+#
+# Listmonk ProviderConfig — drives every downstream listmonk MR
+# (AppSettings, eventually SecuritySettings + UserRole + User) via
+# the credentials that the chart-bootstrapped api-user-bootstrap
+# Hook writes to the install namespace's `<release>-provider-creds`
+# Secret.
+#
+# Composed via provider-kubernetes Object (the same wrapping pattern
+# the exposure-zitadel-providerconfig render uses for Zitadel). The
+# alternative — depending on the upjet-listmonk provider's CRDs being
+# directly composed by Crossplane — would couple this stack to the
+# provider's installation timing. The Object-wrapped indirection lets
+# the listmonk provider show up later in the install order without
+# blocking the rest of the stack.
+#
+# Namespaced ProviderConfig (`listmonk.m.crossplane.io/v1beta1`) so
+# the downstream MRs can resolve it without crossing namespaces — per
+# reference_v2_providerconfig_same_namespace_lookup.
+#
+# Gated on $state.adminAuth.createApiUser — the chart-bootstrapped
+# Secret only exists when the chart's post-install hook is enabled.
+
+{{- $adminAuth := $state.adminAuth }}
+
+{{- if $adminAuth.createApiUser }}
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: {{ $state.name }}-listmonk-providerconfig
+  annotations:
+    {{ setResourceNameAnnotation "listmonk-providerconfig" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  managementPolicies: {{ $state.managementPolicies | toJson }}
+  forProvider:
+    manifest:
+      apiVersion: listmonk.m.crossplane.io/v1beta1
+      kind: ProviderConfig
+      metadata:
+        name: {{ $state.name }}-listmonk
+        namespace: {{ $state.namespace }}
+        labels: {{ $state.labels | toJson }}
+      spec:
+        credentials:
+          source: Secret
+          secretRef:
+            name: {{ $adminAuth.providerCredsSecretName }}
+            namespace: {{ $state.namespace }}
+            key: credentials
+  providerConfigRef:
+    name: {{ $state.kubernetesProviderConfigRef.name }}
+    kind: {{ $state.kubernetesProviderConfigRef.kind }}
+{{- end }}

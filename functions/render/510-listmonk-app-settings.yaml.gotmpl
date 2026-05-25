@@ -1,0 +1,92 @@
+# code: language=yaml
+#
+# Declarative `app.*` settings via the upjet-listmonk provider's
+# AppSettings MR — one row per declared field in the Listmonk
+# `settings` table (`app.root_url`, `app.from_email`, etc.).
+#
+# Why declarative when the chart already writes [app] in config.toml:
+# the chart's config.toml only seeds INITIAL values at first install.
+# Listmonk's koanf loader merges env > config.toml > DB on startup;
+# after that the DB row wins (reference_listmonk_db_overrides_koanf).
+# Without this MR, post-install operator edits to app.root_url etc.
+# via the admin UI drift the runtime away from the GitOps spec — and
+# subsequent helm upgrades don't fix it because the DB row already
+# exists.
+#
+# This MR reconciles the DB rows so the GitOps spec wins on every
+# Crossplane reconcile pass. Fields the consumer declares (via the
+# XR's spec) become source of truth; fields left null are not touched
+# on the server (the listmonk_app_settings resource preserves operator
+# UI edits to unmanaged keys).
+#
+# Gated on $state.adminAuth.createApiUser (the same flag that wires
+# up the api user the ProviderConfig authenticates as). Empty render
+# when the consumer has no declared values — there's nothing useful
+# to write to the DB.
+
+{{- $adminAuth := $state.adminAuth }}
+{{- $exp := $state.exposure }}
+{{- $smtp := $state.smtp }}
+
+# Collect the field set we'll declare from XR state. v3.1 covers the
+# four most-impactful keys; v3.2+ can extend to logo_url, favicon_url,
+# concurrency, message_rate, etc.
+{{- $forProvider := dict
+  "providerConfigRef" (dict "name" (printf "%s-listmonk" $state.name))
+}}
+{{- $fields := dict }}
+
+# app.root_url: derived from exposure when set (matches the OIDC
+# redirect URI Listmonk uses), else the chart-default "0.0.0.0:9000"
+# stays in effect (no MR field rendered → unmanaged → operator
+# UI editable).
+{{- if and $exp.enabled $exp.hostname }}
+  {{- $fields = set $fields "rootUrl" (printf "https://%s" $exp.hostname) }}
+{{- end }}
+
+# app.from_email: from SMTPStack state when SMTP is wired.
+{{- if $smtp.fromAddress }}
+  {{- $fields = set $fields "fromEmail" $smtp.fromAddress }}
+{{- end }}
+
+# app.site_name: from spec.siteName when set, else fall back to
+# spec.domain (a sensible "Acme Newsletter"-ish default for
+# operators who didn't write an explicit siteName).
+{{- if $state.siteName }}
+  {{- $fields = set $fields "siteName" $state.siteName }}
+{{- else if $state.domain }}
+  {{- $fields = set $fields "siteName" (printf "%s Newsletter" $state.domain) }}
+{{- end }}
+
+# Skip the entire render when there are no fields to declare —
+# avoids creating an empty MR that no-ops every reconcile and
+# clutters the install-ns resource graph.
+{{- if and $adminAuth.createApiUser (gt (len $fields) 0) }}
+{{- $forProvider = set $forProvider "forProvider" $fields }}
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: {{ $state.name }}-listmonk-app-settings
+  annotations:
+    {{ setResourceNameAnnotation "listmonk-app-settings" }}
+  labels: {{ $state.labels | toJson }}
+spec:
+  managementPolicies: {{ $state.managementPolicies | toJson }}
+  forProvider:
+    manifest:
+      apiVersion: settings.listmonk.m.crossplane.io/v1alpha1
+      kind: AppSettings
+      metadata:
+        name: {{ $state.name }}-app-settings
+        namespace: {{ $state.namespace }}
+        labels: {{ $state.labels | toJson }}
+      spec:
+        forProvider:
+          {{- toYaml $fields | nindent 10 }}
+        providerConfigRef:
+          name: {{ $state.name }}-listmonk
+  providerConfigRef:
+    name: {{ $state.kubernetesProviderConfigRef.name }}
+    kind: {{ $state.kubernetesProviderConfigRef.kind }}
+{{- end }}

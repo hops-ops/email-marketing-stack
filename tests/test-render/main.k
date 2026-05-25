@@ -344,6 +344,80 @@ _items = [
             ]
         }
     }
+    # ==========================================================================
+    # Test 9 (v3.1): adminAuth.createApiUser=true (default) renders the
+    #                listmonk ProviderConfig + AppSettings MR (when there
+    #                are app fields to declare) — declarative settings
+    #                composition.
+    # ==========================================================================
+    metav1alpha1.CompositionTest {
+        metadata.name = "v3-1-renders-listmonk-providerconfig-and-app-settings"
+        spec = {
+            compositionPath = "apis/emailmarketingstacks/composition.yaml"
+            xrdPath = "apis/emailmarketingstacks/definition.yaml"
+            timeoutSeconds = 60
+            validate = False
+            xr = stacksv1alpha1.EmailMarketingStack {
+                metadata.name = "marketing"
+                spec = {
+                    clusterName = "my-cluster"
+                    domain = "ops.com.ai"
+                    siteName = "Acme Newsletter"
+                    smtp.fromAddress = "newsletter@ops.com.ai"
+                    exposure = {
+                        enabled = True
+                        domain = "ops.com.ai"
+                    }
+                }
+            }
+            assertResources = [
+                # ProviderConfig wrapped via kubernetes.m Object — points
+                # at the chart-bootstrapped <release>-provider-creds Secret
+                # in the install namespace.
+                {
+                    apiVersion = "kubernetes.m.crossplane.io/v1alpha1"
+                    kind = "Object"
+                    metadata.name = "marketing-listmonk-providerconfig"
+                    spec.forProvider.manifest = {
+                        apiVersion = "listmonk.m.crossplane.io/v1beta1"
+                        kind = "ProviderConfig"
+                        metadata.name = "marketing-listmonk"
+                        metadata.namespace = "marketing"
+                        spec.credentials = {
+                            source = "Secret"
+                            secretRef = {
+                                name = "marketing-listmonk-provider-creds"
+                                namespace = "marketing"
+                                key = "credentials"
+                            }
+                        }
+                    }
+                }
+                # AppSettings MR carrying the rootUrl (from exposure),
+                # fromEmail (from spec.smtp), and siteName (from
+                # spec.siteName when set).
+                {
+                    apiVersion = "kubernetes.m.crossplane.io/v1alpha1"
+                    kind = "Object"
+                    metadata.name = "marketing-listmonk-app-settings"
+                    spec.forProvider.manifest = {
+                        apiVersion = "settings.listmonk.m.crossplane.io/v1alpha1"
+                        kind = "AppSettings"
+                        metadata.name = "marketing-app-settings"
+                        metadata.namespace = "marketing"
+                        spec = {
+                            forProvider = {
+                                rootUrl = "https://marketing.ops.com.ai"
+                                fromEmail = "newsletter@ops.com.ai"
+                                siteName = "Acme Newsletter"
+                            }
+                            providerConfigRef.name = "marketing-listmonk"
+                        }
+                    }
+                }
+            ]
+        }
+    }
 ]
 
 items = _items

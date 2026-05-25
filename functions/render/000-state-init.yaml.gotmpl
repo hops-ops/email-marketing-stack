@@ -53,6 +53,12 @@
   {{- $hostname = printf "marketing.%s" $domain }}
 {{- end }}
 
+# Site name shown in Listmonk admin UI + subscriber-facing pages.
+# Surfaces to the AppSettings MR (v3.1+) when declarative app config
+# is on (gated by spec.adminAuth.createApiUser). When unset the
+# AppSettings render falls back to `<domain> Newsletter`.
+{{- $siteName := $spec.siteName | default "" }}
+
 # Chart pin (0.2.0+ ships the post-install api-user bootstrap hook)
 {{- $chartVersion := $spec.version | default "0.2.0" }}
 {{- $chartValues := $spec.chartValues | default dict }}
@@ -206,6 +212,7 @@
   "tenancy" (dict "mode" $tenancyMode)
   "domain" $domain
   "hostname" $hostname
+  "siteName" $siteName
   "chartVersion" $chartVersion
   "chartValues" $chartValues
   "overrideAllValues" $overrideAllValues
