@@ -31,14 +31,7 @@ jobs:
           { "example": "examples/emailmarketingstacks/local-colima.yaml" }
         ]
       api_path: apis/emailmarketingstacks
-      # EmailMarketingStack composes a `PSQLCluster` (managed by the
-      # sibling hops-ops/psql-stack Configuration). The validate job
-      # doesn't pull cross-Configuration schemas, so PSQLCluster's
-      # OpenAPI schema is missing here. Set to false to allow the
-      # validate step to pass on unknown-but-typed cross-stack XR
-      # refs. KCL composition tests (the `test` job) cover the
-      # rendered shape of every cross-stack ref.
-      error_on_missing_schemas: false
+      error_on_missing_schemas: true
 
   test:
     uses: unbounded-tech/workflows-crossplane/.github/workflows/test.yaml@v2.20.0

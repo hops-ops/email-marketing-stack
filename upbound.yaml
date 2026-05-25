@@ -16,6 +16,10 @@ spec:
     kind: Provider
     package: xpkg.crossplane.io/crossplane-contrib/provider-kubernetes
     version: '>=v1'
+  - apiVersion: pkg.crossplane.io/v1
+    kind: Configuration
+    package: ghcr.io/hops-ops/psql-stack
+    version: '>=v0.9.1'
   description: EmailMarketingStack installs Listmonk as the platform's self-hosted
     newsletter + marketing-campaign tool. v1 ships the platform-tenancy install shape
     only — Namespace + embedded PSQLCluster (CNPG) + Listmonk Helm Release + an SMTP
