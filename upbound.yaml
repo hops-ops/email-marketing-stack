@@ -19,7 +19,7 @@ spec:
   - apiVersion: pkg.crossplane.io/v1
     kind: Configuration
     package: ghcr.io/hops-ops/psql-stack
-    version: '>=v0.9.1'
+    version: '>=v0.10.0'
   description: EmailMarketingStack installs Listmonk as the platform's self-hosted
     newsletter + marketing-campaign tool. v1 ships the platform-tenancy install shape
     only — Namespace + embedded PSQLCluster (CNPG) + Listmonk Helm Release + an SMTP
