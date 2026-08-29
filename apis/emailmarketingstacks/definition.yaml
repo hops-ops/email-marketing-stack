@@ -94,6 +94,7 @@ spec:
               version:
                 description: Listmonk Helm chart version (hops-ops/listmonk-chart). Defaults to "0.2.0" (the post-install api-user-bootstrap hook ships in 0.2.0+).
                 type: string
+                # renovate: datasource=github-releases depName=hops-ops/listmonk-chart
                 default: "0.2.0"
               chartValues:
                 description: Helm values merged on top of the stack-rendered defaults. Use this for overrides not covered by the typed surface.
@@ -162,6 +163,7 @@ spec:
                           version:
                             description: Postgres major version. Defaults to "17".
                             type: string
+                            # renovate: datasource=docker depName=library/postgres registryUrl=https://index.docker.io
                             default: "17"
                           parameters:
                             description: postgres.conf parameters merged into the composed Cluster.spec.postgresql.parameters.

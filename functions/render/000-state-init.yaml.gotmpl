@@ -60,6 +60,7 @@
 {{- $siteName := $spec.siteName | default "" }}
 
 # Chart pin (0.2.0+ ships the post-install api-user bootstrap hook)
+# renovate: datasource=github-releases depName=hops-ops/listmonk-chart
 {{- $chartVersion := $spec.version | default "0.2.0" }}
 {{- $chartValues := $spec.chartValues | default dict }}
 {{- $overrideAllValues := $spec.overrideAllValues | default dict }}
@@ -79,6 +80,7 @@
 {{- if not $embStorage.size }}{{- $embStorage = set $embStorage "size" "5Gi" }}{{- end }}
 {{- if not $embStorage.class }}{{- $embStorage = set $embStorage "class" "psql" }}{{- end }}
 {{- $embPostgres := $emb.postgresql | default dict }}
+# renovate: datasource=docker depName=library/postgres registryUrl=https://index.docker.io
 {{- if not $embPostgres.version }}{{- $embPostgres = set $embPostgres "version" "17" }}{{- end }}
 {{- $embInstances := 1 }}
 {{- if hasKey $emb "instances" }}{{- $embInstances = $emb.instances }}{{- end }}
