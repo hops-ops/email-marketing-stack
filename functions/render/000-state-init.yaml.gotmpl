@@ -61,7 +61,7 @@
 
 # Chart pin (0.2.0+ ships the post-install api-user bootstrap hook)
 # renovate: datasource=github-releases depName=hops-ops/listmonk-chart
-{{- $chartVersion := $spec.version | default "0.2.0" }}
+{{- $chartVersion := $spec.version | default "0.2.1" }}
 {{- $chartValues := $spec.chartValues | default dict }}
 {{- $overrideAllValues := $spec.overrideAllValues | default dict }}
 

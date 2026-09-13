@@ -59,7 +59,7 @@ _items = [
                             name = "listmonk"
                             repository = "https://hops-ops.github.io/listmonk-chart"
                             # renovate: datasource=github-releases depName=hops-ops/listmonk-chart
-                            version = "0.2.0"
+                            version = "0.2.1"
                         }
                         namespace = "marketing"
                         values.resources = {
