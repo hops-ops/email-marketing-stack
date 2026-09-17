@@ -95,7 +95,7 @@ spec:
                 description: Listmonk Helm chart version (hops-ops/listmonk-chart). Defaults to "0.2.0" (the post-install api-user-bootstrap hook ships in 0.2.0+).
                 type: string
                 # renovate: datasource=github-releases depName=hops-ops/listmonk-chart
-                default: "0.2.0"
+                default: "0.2.1"
               chartValues:
                 description: Helm values merged on top of the stack-rendered defaults. Use this for overrides not covered by the typed surface.
                 type: object
